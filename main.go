@@ -1,85 +1,94 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"html/template"
-	"log"
 	"net/http"
 	"strconv"
+
+	_ "modernc.org/sqlite" // без этой штуки бд не запустится вообще 
 )
 
-
+// простая структура для одной строчки
 type Cost struct {
-	Sum       float64
-	Title     string
-	CreatedAt string
+	ID    int
+	Sum   float64
+	Title string
+	Date  string
 }
 
-// Временное хранилище прямо в озу
-var memoryStorage []Cost
+var db *sql.DB
 var tpl *template.Template
 
-// Главный хендлер для сайта
-func homeHandler(w http.ResponseWriter, r *http.Request) {
-	// Если юзер просто открыл страницу  — показываем таблицу
+
+func home(w http.ResponseWriter, r *http.Request) {
+	// если просто открыли сайт (GET), то грузим данные из базы в таблицу
 	if r.Method == "GET" {
-		// Рендерим каркас base.html 
-		err := tpl.ExecuteTemplate(w, "base.html", memoryStorage)
-		if err != nil {
-			http.Error(w, "Ошибка шаблона", http.StatusInternalServerError)
+		rows, _ := db.Query("SELECT id, sum, title, date FROM costs ORDER BY id DESC")
+		defer rows.Close()
+
+		var list []Cost
+		for rows.Next() {
+			var c Cost
+			_ = rows.Scan(&c.ID, &c.Sum, &c.Title, &c.Date)
+			list = append(list, c)
 		}
+
+		
+		_ = tpl.ExecuteTemplate(w, "base.html", list)
 		return
 	}
 
-	// если юзер нажал на кнопку и отправил форму 
+	// если отправили форму (POST), то тупо пихаем новую запись в бд
 	if r.Method == "POST" {
 		sumStr := r.FormValue("sum")
 		title := r.FormValue("title")
 		date := r.FormValue("date")
 
-		// Конвертируем строку с ценой в нормальное число float64
 		sum, _ := strconv.ParseFloat(sumStr, 64)
 
-		// Создаем новую запись расходов 
-		newRecord := Cost{
-			Sum:       sum,
-			Title:     title,
-			CreatedAt: date,
-		}
+		
+		_, _ = db.Exec("INSERT INTO costs (sum, title, date) VALUES (?, ?, ?)", sum, title, date)
 
-		// Добавляем запись в наш глобальный массив в памяти
-		memoryStorage = append(memoryStorage, newRecord)
-
-		// Возвращаем юзера на главную страницу
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		// страница обновилась
+		http.Redirect(w, r, "/", 303)
 		return
 	}
 }
 
-// Служебные страницы из 1 этапа оставляем
-func aboutHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Прога для ленивых: записываем, сколько бабок улетело в никуда.")
-}
+// хендлер для кнопки удалить
+func cancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		idStr := r.FormValue("id")
+		id, _ := strconv.Atoi(idStr)
 
-func pingHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(405)
-		fmt.Fprintf(w, "Сюда можно только через GET заходить, сорян")
-		return
+		// удаляем из таблицы по id
+		_, _ = db.Exec("DELETE FROM costs WHERE id = ?", id)
 	}
-	w.WriteHeader(200)
-	fmt.Fprintf(w, "pong")
+	http.Redirect(w, r, "/", 303)
 }
 
 func main() {
-	// Компилируем наши новые HTML шаблоны из папки web/templates
+	// открываем файл базы данных, он сам создается в папке
+	db, _ = sql.Open("sqlite", "finance.db")
+	defer db.Close()
+
+	// создаем самую обычную таблицу если её еще нет
+	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS costs (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		sum REAL,
+		title TEXT,
+		date TEXT
+	);`)
+
+	
 	tpl = template.Must(template.ParseGlob("web/templates/*.html"))
 
-	// Настраиваем маршруты
-	http.HandleFunc("/", homeHandler)
-	http.HandleFunc("/about", aboutHandler)
-	http.HandleFunc("/ping", pingHandler)
+	// маршруты для страниц
+	http.HandleFunc("/", home)
+	http.HandleFunc("/cancel", cancel)
 
-	fmt.Println("Сервер Второго этапа (хранение в памяти) запущен на http://localhost:8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	fmt.Println("Сервер третьего этапа пашет на http://localhost:8080")
+	http.ListenAndServe(":8080", nil)
 }
